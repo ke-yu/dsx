@@ -395,23 +395,17 @@ func isOctalDigit(c CharCode) bool {
     return c >= charCode0 && c <= charCode7;
 }
 
-type Position struct {
-    line int
-    col int
-}
-
 type Token struct {
     Kind SyntaxKind 
-    start Position 
-    end Position
-    pos int
-    value string
+    Line int
+    Col int
+    Value string
     next *Token
 }
 
-func (token *Token) Value() string {
-    if token.value != "" {
-        return token.value
+func (token *Token) StringValue() string {
+    if token.Value != "" {
+        return token.Value
     } else if token.Kind > Unknown && token.Kind < WhiteSpaceTrival {
         return syntaxKindToString[token.Kind]
     } else {
@@ -420,9 +414,10 @@ func (token *Token) Value() string {
 }
 
 type Scanner struct{
-    sourcePos Position
-    pos int 
-    end int
+    line int
+    col int
+    pos int          // charcode pos
+    end int          // end (length)
     source string    // source code
     token *Token     // current token
     peekToken *Token // peek token
@@ -430,27 +425,25 @@ type Scanner struct{
 
 func CreateScanner(source string) *Scanner {
     scanner := new(Scanner)
+    scanner.line = 1
+    scanner.col = 1
     scanner.source = source
     scanner.pos = 0
     scanner.end = len(source)
 
-    dummyToken := newToken(Unknown)
+    dummyToken := scanner.newToken()
+    dummyToken.Kind = Unknown
+
     scanner.token = dummyToken
     scanner.peekToken = dummyToken
 
     return scanner
 }
 
-func newToken(kind SyntaxKind) *Token {
+func (scanner *Scanner) newToken() *Token {
     t := new(Token)
-    t.Kind = kind
-    return t
-}
-
-func newTokenWithValue(kind SyntaxKind, value string) *Token {
-    t := new(Token)
-    t.Kind = kind
-    t.value = value
+    t.Line = scanner.line
+    t.Col = scanner.col
     return t
 }
 
@@ -464,12 +457,15 @@ func (scanner *Scanner) currentCharCode() (CharCode) {
     return CharCode(runeValue)
 }
 
-func (scanner *Scanner) moveTo(pos int) {
-    scanner.pos = pos
-}
-
 func (scanner *Scanner) moveToNextCharCode() {
-    _, width := utf8.DecodeRuneInString(scanner.source[scanner.pos:])
+    runeValue, width := utf8.DecodeRuneInString(scanner.source[scanner.pos:])
+    charCode := CharCode(runeValue)
+    if isLineBreak(charCode) {
+        scanner.line = scanner.line + 1
+        scanner.col = 1
+    } else {
+        scanner.col = scanner.col + 1
+    }
     scanner.pos = scanner.pos + width
 }
 
@@ -492,16 +488,16 @@ func (scanner *Scanner) scanString() string {
 
         c := scanner.currentCharCode()
         if c == quote {
-            result = scanner.source[start:scanner.pos]
+            result += scanner.source[start:scanner.pos]
             scanner.moveToNextCharCode()
             break
         } else if c == charCodeBackslash {
-            result = scanner.source[start:scanner.pos]
-            result = result + scanner.scanEscapeCharacter()
+            result += scanner.source[start:scanner.pos]
+            result += scanner.scanEscapeCharacter()
             start = scanner.pos
             continue
         } else if isLineBreak(c) {
-            result = scanner.source[start:scanner.pos]
+            result += scanner.source[start:scanner.pos]
             scanner.moveToNextCharCode()
         }
 
@@ -614,9 +610,12 @@ func (scanner *Scanner) scanHexDigits() int {
 }
 
 func (scanner *Scanner) nextToken() *Token {
+    t := scanner.newToken()
+
     for true {
         if scanner.EOF() {
-            return newToken(EndOfFile)
+            t.Kind = EndOfFile
+            return t
         }
 
         c := scanner.currentCharCode()
@@ -625,7 +624,6 @@ func (scanner *Scanner) nextToken() *Token {
             case charCodeCarriageReturn:
                 fallthrough
             case charCodeLineFeed:
-                scanner.sourcePos.line += 1
                 fallthrough
             case charCodeTab:
                 fallthrough
@@ -635,56 +633,70 @@ func (scanner *Scanner) nextToken() *Token {
                 fallthrough
             case charCodeSpace:
                 scanner.moveToNextCharCode()
+                t = scanner.newToken()
                 continue
             case charCodeExclamation:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeEquals {
-                    scanner.moveTo(nextNewPos)
-                    return newToken(ExclamationEqualsToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(ExclamationToken)
+                    t.Kind = ExclamationEqualsToken
+                } else {
+                    t.Kind = ExclamationToken
                 }
+                return t
             case charCodeSingleQuote:
                 fallthrough
             case charCodeDoubleQuote:
-                tokenValue := scanner.scanString()
-                return newTokenWithValue(StringLiteral, tokenValue)
+                t.Kind = StringLiteral
+                t.Value = scanner.scanString()
+                return t
             case charCodeHash:
                 scanner.moveToNextCharCode()
-                return newToken(HashToken)
+                t.Kind = HashToken
+                return t
             case charCodePercent:
                 scanner.moveToNextCharCode()
-                return newToken(PercentToken)
+                t.Kind = PercentToken
+                return t
             case charCodeAmpersand:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeAmpersand {
-                    scanner.pos = nextNewPos 
-                    return newToken(AmpersandAmpersandToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(AmpersandToken)
+                    t.Kind = AmpersandAmpersandToken
+                } else {
+                    t.Kind = AmpersandToken
                 }
+                return t
             case charCodeOpenParen:
                 scanner.moveToNextCharCode()
-                return newToken(OpenParenthesisToken)
+                t.Kind = OpenParenthesisToken
+                return t
             case charCodeCloseParen:
                 scanner.moveToNextCharCode()
-                return newToken(CloseParenthesisToken)
+                t.Kind = CloseParenthesisToken
+                return t
             case charCodeAsterisk:
                 scanner.moveToNextCharCode()
-                return newToken(AsteriskToken)
+                t.Kind = AsteriskToken
+                return t
             case charCodePlus:
                 scanner.moveToNextCharCode()
-                return newToken(PlusToken)
+                t.Kind = PlusToken
+                return t
             case charCodeMinus:
                 scanner.moveToNextCharCode()
-                return newToken(MinusToken)
+                t.Kind = MinusToken
+                return t
             case charCodeSlash:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
                 // single line comment
                 if nextc == charCodeSlash {
-                    scanner.moveTo(nextNewPos)
+                    scanner.moveToNextCharCode()
+                    scanner.moveToNextCharCode()
                     start := scanner.pos
                     for scanner.pos < scanner.end {
                         if isLineBreak(scanner.currentCharCode()) {
@@ -694,11 +706,12 @@ func (scanner *Scanner) nextToken() *Token {
                     }
                     end := scanner.pos
 
-                    tokenValue := scanner.source[start:end]
-                    return newTokenWithValue(SingleLineComment, tokenValue)
+                    t.Kind = SingleLineComment 
+                    t.Value = scanner.source[start:end]
                 // multi line comment
                 } else if nextc == charCodeAsterisk {
-                    scanner.moveTo(nextNewPos + 1)
+                    scanner.moveToNextCharCode()
+                    scanner.moveToNextCharCode()
 
                     start := scanner.pos
                     end := scanner.pos
@@ -708,104 +721,124 @@ func (scanner *Scanner) nextToken() *Token {
                         nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
                         if c == charCodeAsterisk && nextc == charCodeSlash {
                             end = nextNewPos - 2
-                            scanner.moveTo(nextNewPos)
+                            scanner.moveToNextCharCode()
+                            scanner.moveToNextCharCode()
                             break;
                         } else {
                             scanner.moveToNextCharCode()
                         }
                     }
 
-                    tokenValue := scanner.source[start:end]
-                    return newTokenWithValue(MultipleLineComment, tokenValue)
+                    t.Kind = MultipleLineComment
+                    t.Value = scanner.source[start:end]
                 } else {
                     scanner.moveToNextCharCode()
-                    return newToken(SlashToken)
+                    t.Kind = SlashToken
                 }
+                return t
             case charCodeComma:
                 scanner.moveToNextCharCode()
-                return newToken(CommaToken)
+                t.Kind = CommaToken
+                return t
             case charCodeDot:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if isDigit(nextc) {
-                    scanner.moveToNextCharCode()
-                    tokenValue := scanner.scanNumber()
-                    return newTokenWithValue(NumericLiteral, tokenValue)
+                    t.Value = scanner.scanNumber()
+                    t.Kind = NumericLiteral
                 } else if nextc == charCodeDot{
-                    scanner.moveTo(nextNewPos)
-                    return newToken(DotDotToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(DotToken)
+                    t.Kind = DotDotToken
+                } else {
+                    t.Kind = DotToken
                 }
+                return t
             case charCodeColon:
                 scanner.moveToNextCharCode()
-                return newToken(ColonToken)
+                t.Kind = ColonToken
+                return t
             case charCodeSemiColon:
                 scanner.moveToNextCharCode()
-                return newToken(SemiColonToken)
+                t.Kind = SemiColonToken
+                return t
             case charCodeLessThan:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeEquals {
-                    scanner.moveTo(nextNewPos)
-                    return newToken(LessThanEqualsToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(LessThanToken)
+                    t.Kind = LessThanEqualsToken
+                } else {
+                    t.Kind = LessThanToken
                 }
+                return t
             case charCodeEquals:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeEquals {
-                    scanner.moveTo(nextNewPos)
-                    return newToken(EqualsEqualsToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(EqualsToken)
+                    t.Kind = EqualsEqualsToken
+                } else {
+                    t.Kind = EqualsToken
                 }
+                return t
             case charCodeGreaterThan:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeEquals {
-                    scanner.moveTo(nextNewPos)
-                    return newToken(GreaterThanEqualsToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(GreaterThanToken)
+                    t.Kind = GreaterThanEqualsToken
+                } else {
+                    t.Kind = GreaterThanToken
                 }
+                return t
             case charCodeQuestion:
                 scanner.moveToNextCharCode()
-                return newToken(QuestionToken)
+                t.Kind = QuestionToken
+                return t
             case charCodeOpenBracket:
                 scanner.moveToNextCharCode()
-                return newToken(OpenBracketToken)
+                t.Kind = OpenBracketToken
+                return t
             case charCodeCloseBracket:
                 scanner.moveToNextCharCode()
-                return newToken(CloseBracketToken)
+                t.Kind = CloseBracketToken
+                return t
             case charCodeOpenBrace:
                 scanner.moveToNextCharCode()
-                return newToken(OpenBraceToken)
+                t.Kind = OpenBraceToken
+                return t
             case charCodeCloseBrace:
                 scanner.moveToNextCharCode()
-                return newToken(CloseBraceToken)
+                t.Kind = CloseBraceToken
+                return t
             case charCodeBar:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
+
                 if nextc == charCodeBar {
-                    scanner.moveTo(nextNewPos)
-                    return newToken(BarBarToken)
-                } else {
                     scanner.moveToNextCharCode()
-                    return newToken(BarToken)
+                    t.Kind = BarBarToken
+                } else {
+                    t.Kind = BarToken
                 }
+                return t
             case charCode0:
-                nextc, nextNewPos := scanner.charCodeAt(scanner.pos + 1)
+                nextc, _:= scanner.charCodeAt(scanner.pos + 1)
+                scanner.moveToNextCharCode()
                 if nextc == charCodeX || nextc == charCodex {
-                    scanner.moveTo(nextNewPos)
-                    tokenValue := scanner.scanHexDigits()
-                    return newTokenWithValue(NumericLiteral, strconv.Itoa(tokenValue))
+                    scanner.moveToNextCharCode()
+                    t.Value = strconv.Itoa(scanner.scanHexDigits())
+                    t.Kind = NumericLiteral
+                    return t
                 } else if isOctalDigit(nextc) {
-                    scanner.moveToNextCharCode()
-                    tokenValue := scanner.scanOctalDigits()
-                    return newTokenWithValue(NumericLiteral, strconv.Itoa(tokenValue))
+                    t.Value = strconv.Itoa(scanner.scanOctalDigits())
+                    t.Kind = NumericLiteral
+                    return t
                 } else {
-                    scanner.moveToNextCharCode()
                     continue
                 }
             case charCode1:
@@ -825,8 +858,9 @@ func (scanner *Scanner) nextToken() *Token {
             case charCode8:
                 fallthrough
             case charCode9:
-                tokenValue := scanner.scanNumber()
-                return newTokenWithValue(NumericLiteral, tokenValue)
+                t.Value = scanner.scanNumber()
+                t.Kind = NumericLiteral
+                return t
             default:
                 if isIdentifierStart(c) {
                     tokenPos := scanner.pos
@@ -839,9 +873,12 @@ func (scanner *Scanner) nextToken() *Token {
                     tokenValue := scanner.source[tokenPos : scanner.pos]
                     syntaxKind, ok := stringToSyntaxKind[tokenValue]
                     if ok {
-                        return newToken(syntaxKind)
+                        t.Kind = syntaxKind
+                        return t
                     } else {
-                        return newTokenWithValue(Identifier, tokenValue)
+                        t.Value = tokenValue
+                        t.Kind = Identifier
+                        return t
                     }
                 } else if isWhiteSpace(c) {
                     scanner.moveToNextCharCode()
@@ -851,12 +888,13 @@ func (scanner *Scanner) nextToken() *Token {
                     continue
                 } else {
                     scanner.moveToNextCharCode()
-                    return newToken(Unknown)
+                    t.Kind = Unknown
                 }
         }
     }
 
-    return newToken(Unknown) 
+    t.Kind = Unknown
+    return t
 }
 
 func (scanner *Scanner) Scan() *Token {
